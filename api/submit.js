@@ -1,10 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 
-function cors(res) {
+// ✅ CORS (PRE-FLIGHT dahil)
+function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key");
+  // bazı ortamlarda faydalı
+  res.setHeader("Access-Control-Max-Age", "86400");
 }
 
 function requireEnv(name) {
@@ -29,7 +32,7 @@ async function buildPdf(data) {
   const x = 50;
 
   const write = (txt, size = 11, isBold = false) => {
-    page.drawText(txt, { x, y, size, font: isBold ? bold : font });
+    page.drawText(String(txt || ""), { x, y, size, font: isBold ? bold : font });
     y -= size + 6;
   };
 
@@ -77,11 +80,19 @@ async function buildPdf(data) {
 }
 
 export default async function handler(req, res) {
-  try {
-    cors(res);
-    if (req.method === "OPTIONS") return res.status(204).end();
-    if (req.method !== "POST") return res.status(405).send("Method not allowed");
+  setCors(res);
 
+  // ✅ Preflight (OPTIONS) burada kesin dönmeli
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
+  try {
+    if (req.method !== "POST") {
+      return res.status(405).send("Method not allowed");
+    }
+
+    // Opsiyonel API key kontrolü
     const apiKey = process.env.API_KEY;
     if (apiKey && req.headers["x-api-key"] !== apiKey) {
       return res.status(401).send("Unauthorized");
@@ -91,20 +102,21 @@ export default async function handler(req, res) {
     const supabaseServiceKey = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
 
     const data = {
-      ad: body?.ad || "",
-      soyad: body?.soyad || "",
-      ogrno: body?.ogrno || "",
-      mail: body?.mail || "",
-      telefon: body?.telefon || "",
-      bolum: body?.bolum || "",
-      aciklama: body?.aciklama || "",
-      dersler: Array.isArray(body?.dersler) ? body.dersler : []
+      ad: body.ad || "",
+      soyad: body.soyad || "",
+      ogrno: body.ogrno || "",
+      mail: body.mail || "",
+      telefon: body.telefon || "",
+      bolum: body.bolum || "",
+      aciklama: body.aciklama || "",
+      dersler: Array.isArray(body.dersler) ? body.dersler : []
     };
 
-    await supabase.from("basvurular").insert([{
+    // ✅ Supabase kayıt
+    const ins = await supabase.from("basvurular").insert([{
       ad: data.ad,
       soyad: data.soyad,
       ogrno: data.ogrno,
@@ -115,6 +127,11 @@ export default async function handler(req, res) {
       dersler_json: data.dersler
     }]);
 
+    if (ins.error) {
+      return res.status(500).send("Supabase insert error: " + ins.error.message);
+    }
+
+    // ✅ PDF üret
     const pdfBytes = await buildPdf(data);
     const fileName = `Dilekce_${sanitizeFileName(`${data.ogrno}_${data.ad}_${data.soyad}`)}.pdf`;
 
@@ -125,4 +142,3 @@ export default async function handler(req, res) {
     return res.status(500).send(String(err?.stack || err));
   }
 }
-
